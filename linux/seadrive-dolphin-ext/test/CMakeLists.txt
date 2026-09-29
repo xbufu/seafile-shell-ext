@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.16)
+project(seadrive-dolphin-test)
+set(CMAKE_CXX_STANDARD 17)
+set(QTV 6 CACHE STRING "Qt/KF major version")
+find_package(Qt${QTV} REQUIRED COMPONENTS Widgets)
+find_package(KF${QTV}KIO REQUIRED)
+add_executable(harness main.cpp)
+target_link_libraries(harness KF${QTV}::KIOWidgets)

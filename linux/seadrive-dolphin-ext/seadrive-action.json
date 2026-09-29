@@ -1,0 +1,6 @@
+{
+    "KPlugin": {
+        "MimeTypes": ["application/octet-stream", "inode/directory"],
+        "Name": "SeaDrive"
+    }
+}
