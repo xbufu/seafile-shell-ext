@@ -6,6 +6,7 @@
 #include <QHash>
 #include <QUrl>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -48,26 +49,43 @@ public:
         poller_.join();
     }
 
+    // Runs on Dolphin's UI thread, so it never touches the socket: a path seen
+    // for the first time gets no emblem until the poller fetches it.
     QStringList getOverlays(const QUrl &url) override
     {
         const QString path = url.toLocalFile();
         if (!inSeaDrive(path))
             return {};
 
-        const QStringList overlays = emblemsFor(conn_.send(QStringLiteral("get-file-status"), path).value_or(QString()));
         std::lock_guard<std::mutex> lock(mutex_);
-        watched_.insert(path, overlays);
-        return overlays;
+        const auto it = watched_.constFind(path);
+        if (it != watched_.cend())
+            return *it;
+        watched_.insert(path, {});
+        unfetched_ << path;
+        wake_.notify_one();
+        return {};
     }
 
 private:
     void poll()
     {
-        // Own connection: SeaDriveConn is per-thread, conn_ belongs to the UI thread.
+        using clock = std::chrono::steady_clock;
         SeaDriveConn conn;
+        auto nextFullPoll = clock::now() + kPollInterval;
         std::unique_lock<std::mutex> lock(mutex_);
-        while (!wake_.wait_for(lock, std::chrono::seconds(2), [this] { return stop_; })) {
-            const QStringList paths = watched_.keys();
+        while (true) {
+            wake_.wait_until(lock, nextFullPoll, [this] { return stop_ || !unfetched_.isEmpty(); });
+            if (stop_)
+                return;
+
+            // New paths at once, every watched path each kPollInterval.
+            QStringList paths = unfetched_;
+            if (clock::now() >= nextFullPoll) {
+                paths = watched_.keys();
+                nextFullPoll = clock::now() + kPollInterval;
+            }
+            unfetched_.clear();
             lock.unlock();
 
             // ponytail: re-polls every file seen this session, one request each;
@@ -76,6 +94,8 @@ private:
             QHash<QString, QStringList> fresh;
             QStringList gone;
             for (const QString &path : paths) {
+                if (stop_)
+                    break;
                 if (!QFileInfo::exists(path)) {
                     gone << path;
                     continue;
@@ -86,6 +106,7 @@ private:
                 fresh.insert(path, emblemsFor(*status));
             }
 
+            QHash<QString, QStringList> changed;
             lock.lock();
             for (const QString &path : gone)
                 watched_.remove(path);
@@ -93,18 +114,26 @@ private:
                 auto old = watched_.find(it.key());
                 if (old != watched_.end() && *old != it.value()) {
                     *old = it.value();
-                    // Queued to Dolphin's UI thread by Qt (receiver lives there).
-                    Q_EMIT overlaysChanged(QUrl::fromLocalFile(it.key()), it.value());
+                    changed.insert(it.key(), it.value());
                 }
             }
+            lock.unlock();
+
+            // Emitted unlocked so a receiver may call getOverlays(). Qt queues
+            // it to Dolphin's UI thread (the receiver lives there).
+            for (auto it = changed.cbegin(); it != changed.cend(); ++it)
+                Q_EMIT overlaysChanged(QUrl::fromLocalFile(it.key()), it.value());
+            lock.lock();
         }
     }
 
-    SeaDriveConn conn_;
+    static constexpr std::chrono::seconds kPollInterval{2};
+
     std::mutex mutex_;
     std::condition_variable wake_;
-    bool stop_ = false;
+    std::atomic<bool> stop_{false}; // also read unlocked between requests
     QHash<QString, QStringList> watched_;
+    QStringList unfetched_; // in watched_, waiting for their first fetch
     std::thread poller_; // last: starts after the members it uses exist
 };
 

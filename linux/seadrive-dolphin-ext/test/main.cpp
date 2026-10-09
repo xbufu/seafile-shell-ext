@@ -6,7 +6,9 @@
 #include <QApplication>
 #include <QMenu>
 #include <QPluginLoader>
-#include <QTimer>
+#include <QElapsedTimer>
+#include <QThread>
+#include <QHash>
 #include <QFile>
 #include <QDir>
 #include <cstdio>
@@ -14,12 +16,17 @@
 #include <sys/stat.h>
 // SeaDriveConn owns a socket fd: a copy would close it twice.
 static_assert(!std::is_copy_constructible_v<SeaDriveConn> && !std::is_copy_assignable_v<SeaDriveConn>);
-static void setStatus(const char *s, const char *c) {
+static void setStatus(const char *s, const char *c, double delay = 0) {
     QFile f(QDir::homePath() + "/state.json"); f.open(QIODevice::WriteOnly);
-    f.write(QByteArray("{\"status\":\"") + s + "\",\"cached\":\"" + c + "\"}");
+    f.write(QByteArray("{\"status\":\"") + s + "\",\"cached\":\"" + c + "\",\"delay\":" + QByteArray::number(delay) + "}");
 }
 static int fails = 0;
 #define CHECK(x) do { if (!(x)) { printf("FAIL: %s (line %d)\n", #x, __LINE__); fails++; } else printf("ok: %s\n", #x); } while (0)
+template <class Pred> static bool waitFor(Pred done, int ms) {
+    QElapsedTimer t; t.start();
+    while (!done() && t.elapsed() < ms) { QCoreApplication::processEvents(); QThread::msleep(5); }
+    return done();
+}
 static void walk(QMenu *m, QStringList &out, QString indent = "") {
     for (QAction *a : m->actions()) { out << indent + a->text(); if (a->menu()) walk(a->menu(), out, indent + "  "); }
 }
@@ -33,30 +40,31 @@ static QStringList menuFor(const QString &path, bool dir) {
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
     const QString mount = QDir::homePath() + "/SeaDrive";
-    const QString file = mount + "/lib/a.txt";
+    const QString lib = mount + "/lib";
+    const QString file = lib + "/a.txt";
+    const QStringList done{"emblem-seadrive-done"}, lockedOthers{"emblem-seadrive-locked-by-others"}, cloud{"emblem-seadrive-cloud"};
     setStatus("synced", "cached");
 
     QPluginLoader loader(argv[1]);
     auto *ov = qobject_cast<KOverlayIconPlugin *>(loader.instance());
     CHECK(ov);
     if (!ov) return 1;
-    CHECK(ov->getOverlays(QUrl::fromLocalFile(file)) == QStringList{"emblem-seadrive-done"});
-    CHECK(ov->getOverlays(QUrl::fromLocalFile(mount + "/lib")) == QStringList{"emblem-seadrive-done"});
+    QHash<QString, QStringList> latest;
+    QObject::connect(ov, &KOverlayIconPlugin::overlaysChanged, [&](const QUrl &u, const QStringList &o) { latest[u.toLocalFile()] = o; });
+
+    // New paths are fetched in the background right away, not on the next 2s tick.
+    ov->getOverlays(QUrl::fromLocalFile(file));
+    ov->getOverlays(QUrl::fromLocalFile(lib));
+    CHECK(waitFor([&] { return latest.value(file) == done && latest.value(lib) == done; }, 1000));
+    CHECK(ov->getOverlays(QUrl::fromLocalFile(file)) == done);
     CHECK(ov->getOverlays(QUrl::fromLocalFile("/etc/passwd")).isEmpty());
     CHECK(ov->getOverlays(QUrl::fromLocalFile(mount + "X/a")).isEmpty());
 
-    QStringList got;
-    QObject::connect(ov, &KOverlayIconPlugin::overlaysChanged, [&](const QUrl &u, const QStringList &o) {
-        got << u.toLocalFile() + "=" + o.join(",");
-    });
     setStatus("locked", "cached");
-    QTimer::singleShot(3500, &app, &QApplication::quit); app.exec();
-    got.sort();
-    CHECK(got == QStringList({file + "=emblem-seadrive-locked-by-others", mount + "/lib=emblem-seadrive-locked-by-others"}));
-    printf("  signals: %s\n", qPrintable(got.join(" | ")));
-
+    CHECK(waitFor([&] { return latest.value(file) == lockedOthers && latest.value(lib) == lockedOthers; }, 3500));
     setStatus("cloud", "uncached");
-    CHECK(ov->getOverlays(QUrl::fromLocalFile(file)) == QStringList{"emblem-seadrive-cloud"});
+    CHECK(waitFor([&] { return latest.value(file) == cloud; }, 3500));
+    CHECK(ov->getOverlays(QUrl::fromLocalFile(file)) == cloud);
     setStatus("locked", "cached");
 
     QStringList m = menuFor(file, false);
@@ -68,7 +76,7 @@ int main(int argc, char **argv) {
     setStatus("synced", "cloud");
     m = menuFor(file, false);
     CHECK(m.contains("  Lock File"));
-    m = menuFor(mount + "/lib", true);
+    m = menuFor(lib, true);
     printf("  dir menu: %s\n", qPrintable(m.join(" / ")));
     CHECK(m.contains("  Get Upload Link"));
     m = menuFor(mount, true);
@@ -84,7 +92,23 @@ int main(int argc, char **argv) {
     QFile log(QDir::homePath() + "/requests.log"); log.open(QIODevice::ReadOnly);
     CHECK(log.readAll().contains("get-share-link\t" + file.toUtf8()));
 
+    // A slow SeaDrive must not stall Dolphin's UI thread.
+    setStatus("synced", "cached", 2);
+    QElapsedTimer t; t.start();
+    ov->getOverlays(QUrl::fromLocalFile(lib + "/slow.txt"));
+    CHECK(t.elapsed() < 200);
+
+    // Closing Dolphin must not wait for a whole poll pass (100 files x 50ms).
+    setStatus("synced", "cached", 0.05);
+    for (int i = 0; i < 100; ++i) {
+        const QString p = lib + "/f" + QString::number(i);
+        QFile(p).open(QIODevice::WriteOnly);
+        ov->getOverlays(QUrl::fromLocalFile(p));
+    }
+    waitFor([] { return false; }, 300);
+    t.restart();
     delete ov;  // must join poller thread cleanly
+    CHECK(t.elapsed() < 1000);
     printf(fails ? "FAILED %d\n" : "ALL OK\n", fails);
     return fails != 0;
 }

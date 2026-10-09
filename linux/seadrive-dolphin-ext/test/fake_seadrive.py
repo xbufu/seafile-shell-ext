@@ -1,4 +1,4 @@
-import socket, struct, threading, sys, json
+import socket, struct, threading, sys, json, time
 home = sys.argv[1]
 p = home + '/.seadrive/seadrive_ext.sock'
 srv = socket.socket(socket.AF_UNIX); srv.bind(p); srv.listen()
@@ -12,6 +12,7 @@ def h(c):
         name, path = body.decode().split('\t')
         log.write(f"{name}\t{path}\n")
         st = json.load(open(home + '/state.json'))
+        time.sleep(st.get("delay", 0))
         r = {'is-file-in-repo': 'true', 'get-file-status': st['status'], 'is-file-cached': st['cached'],
              'show-accounts': json.dumps([{"name": "me@x", "signature": "sig1"}])}.get(name, '').encode()
         c.sendall(struct.pack('=I', len(r)) + r)
