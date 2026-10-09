@@ -1,5 +1,5 @@
-import os, socket, struct, threading, sys, json
-home = sys.argv[1]; state = json.load(open(home + '/state.json'))
+import socket, struct, threading, sys, json
+home = sys.argv[1]
 p = home + '/.seadrive/seadrive_ext.sock'
 srv = socket.socket(socket.AF_UNIX); srv.bind(p); srv.listen()
 log = open(home + '/requests.log', 'a', buffering=1)
