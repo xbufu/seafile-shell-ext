@@ -1,3 +1,4 @@
+#include "seadrive-conn.h"
 #include <KOverlayIconPlugin>
 #include <KFileItemActions>
 #include <KFileItemListProperties>
@@ -9,6 +10,9 @@
 #include <QFile>
 #include <QDir>
 #include <cstdio>
+#include <type_traits>
+// SeaDriveConn owns a socket fd: a copy would close it twice.
+static_assert(!std::is_copy_constructible_v<SeaDriveConn> && !std::is_copy_assignable_v<SeaDriveConn>);
 static void setStatus(const char *s, const char *c) {
     QFile f(QDir::homePath() + "/state.json"); f.open(QIODevice::WriteOnly);
     f.write(QByteArray("{\"status\":\"") + s + "\",\"cached\":\"" + c + "\"}");

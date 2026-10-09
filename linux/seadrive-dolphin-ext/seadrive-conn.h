@@ -31,6 +31,9 @@ inline bool inSeaDrive(const QString &path)
 class SeaDriveConn
 {
 public:
+    SeaDriveConn() = default;
+    SeaDriveConn(const SeaDriveConn &) = delete;
+    SeaDriveConn &operator=(const SeaDriveConn &) = delete;
     ~SeaDriveConn() { disconnect(); }
 
     std::optional<QString> send(const QString &cmd, const QString &arg = QString())
