@@ -10,6 +10,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMenu>
+#include <QThreadPool>
 
 // Right-click menus. Items that change a file's lock or cache state need no
 // refresh here: the overlay plugin picks up the new status on its next poll.
@@ -48,8 +49,11 @@ private:
     static void add(QMenu *menu, const QString &label, const QString &cmd, const QString &arg = QString())
     {
         connect(menu->addAction(label), &QAction::triggered, menu, [cmd, arg] {
-            if (!SeaDriveConn().send(cmd, arg))
-                qWarning("SeaDrive: '%s' failed for '%s'", qPrintable(cmd), qPrintable(arg));
+            // Off the UI thread: SeaDrive may take a while to answer.
+            QThreadPool::globalInstance()->start([cmd, arg] {
+                if (!SeaDriveConn().send(cmd, arg))
+                    qWarning("SeaDrive: '%s' failed for '%s'", qPrintable(cmd), qPrintable(arg));
+            });
         });
     }
 

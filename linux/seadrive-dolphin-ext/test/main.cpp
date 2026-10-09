@@ -84,17 +84,22 @@ int main(int argc, char **argv) {
     CHECK(m.contains("    me@x") && m.contains("      Resync") && m.contains("  Quit"));
     CHECK(!menuFor("/etc/passwd", false).contains("SeaDrive"));
 
-    // trigger an action
+    // Triggering an action sends it without waiting on the UI thread for a slow SeaDrive.
     KFileItem item(QUrl::fromLocalFile(file), "text/plain", S_IFREG);
     KFileItemActions actions; actions.setItemListProperties(KFileItemListProperties(KFileItemList{item}));
     QMenu menu; actions.addActionsTo(&menu);
+    setStatus("synced", "cloud", 2);
+    QElapsedTimer t; t.start();
     for (QAction *a : menu.actions()) if (a->menu()) for (QAction *s : a->menu()->actions()) if (s->text() == "Get Share Link") s->trigger();
-    QFile log(QDir::homePath() + "/requests.log"); log.open(QIODevice::ReadOnly);
-    CHECK(log.readAll().contains("get-share-link\t" + file.toUtf8()));
+    CHECK(t.elapsed() < 200);
+    CHECK(waitFor([&] {
+        QFile log(QDir::homePath() + "/requests.log"); log.open(QIODevice::ReadOnly);
+        return log.readAll().contains("get-share-link\t" + file.toUtf8());
+    }, 1000));
 
     // A slow SeaDrive must not stall Dolphin's UI thread.
     setStatus("synced", "cached", 2);
-    QElapsedTimer t; t.start();
+    t.restart();
     ov->getOverlays(QUrl::fromLocalFile(lib + "/slow.txt"));
     CHECK(t.elapsed() < 200);
 
