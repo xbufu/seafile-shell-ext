@@ -78,10 +78,9 @@ private:
 
         // Called from Dolphin's UI thread: never hang it on a stuck SeaDrive.
         timeval tv{3, 0};
-        setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-        setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
-        if (::connect(fd_, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0) {
+        if (setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0
+            || setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0
+            || ::connect(fd_, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0) {
             disconnect();
             return false;
         }
