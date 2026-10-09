@@ -114,6 +114,18 @@ int main(int argc, char **argv) {
     t.restart();
     delete ov;  // must join poller thread cleanly
     CHECK(t.elapsed() < 1000);
+
+    // A socket path too long for sun_path must fail, not connect to its truncated prefix.
+    const QByteArray home = qgetenv("HOME"), longHome = home + "/" + QByteArray(120, 'h');
+    const QByteArray cut = (longHome + "/.seadrive/seadrive_ext.sock").left(sizeof(sockaddr_un::sun_path) - 1);
+    const int trap = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    sockaddr_un addr{}; addr.sun_family = AF_UNIX; memcpy(addr.sun_path, cut.constData(), cut.size());
+    CHECK(bind(trap, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0 && listen(trap, 1) == 0);
+    qputenv("HOME", longHome);
+    CHECK(!SeaDriveConn().send("get-file-status", file));
+    qputenv("HOME", home);
+    CHECK(accept(trap, nullptr, nullptr) < 0);
+    close(trap);
     printf(fails ? "FAILED %d\n" : "ALL OK\n", fails);
     return fails != 0;
 }

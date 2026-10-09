@@ -64,6 +64,14 @@ public:
 private:
     bool connectSocket()
     {
+        const QByteArray path = QFile::encodeName(QDir::homePath() + QStringLiteral("/.seadrive/seadrive_ext.sock"));
+        sockaddr_un addr{};
+        // Truncating a longer path would connect to some other file.
+        if (path.size() >= static_cast<int>(sizeof(addr.sun_path)))
+            return false;
+        addr.sun_family = AF_UNIX;
+        memcpy(addr.sun_path, path.constData(), path.size());
+
         fd_ = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
         if (fd_ < 0)
             return false;
@@ -73,10 +81,6 @@ private:
         setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
-        const QByteArray path = QFile::encodeName(QDir::homePath() + QStringLiteral("/.seadrive/seadrive_ext.sock"));
-        sockaddr_un addr{};
-        addr.sun_family = AF_UNIX;
-        strncpy(addr.sun_path, path.constData(), sizeof(addr.sun_path) - 1);
         if (::connect(fd_, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0) {
             disconnect();
             return false;
