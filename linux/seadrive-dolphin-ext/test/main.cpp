@@ -11,6 +11,7 @@
 #include <QDir>
 #include <cstdio>
 #include <type_traits>
+#include <sys/stat.h>
 // SeaDriveConn owns a socket fd: a copy would close it twice.
 static_assert(!std::is_copy_constructible_v<SeaDriveConn> && !std::is_copy_assignable_v<SeaDriveConn>);
 static void setStatus(const char *s, const char *c) {
@@ -38,6 +39,7 @@ int main(int argc, char **argv) {
     QPluginLoader loader(argv[1]);
     auto *ov = qobject_cast<KOverlayIconPlugin *>(loader.instance());
     CHECK(ov);
+    if (!ov) return 1;
     CHECK(ov->getOverlays(QUrl::fromLocalFile(file)) == QStringList{"emblem-seadrive-done"});
     CHECK(ov->getOverlays(QUrl::fromLocalFile(mount + "/lib")) == QStringList{"emblem-seadrive-done"});
     CHECK(ov->getOverlays(QUrl::fromLocalFile("/etc/passwd")).isEmpty());
