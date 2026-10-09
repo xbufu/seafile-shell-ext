@@ -105,7 +105,7 @@ int main(int argc, char **argv) {
         QFile(p).open(QIODevice::WriteOnly);
         ov->getOverlays(QUrl::fromLocalFile(p));
     }
-    waitFor([] { return false; }, 300);
+    waitFor([] { return false; }, 2100);  // let requests made at the 2s delay finish
     t.restart();
     delete ov;  // must join poller thread cleanly
     CHECK(t.elapsed() < 1000);
