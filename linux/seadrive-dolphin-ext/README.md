@@ -6,7 +6,12 @@ Two KIO plugins for Dolphin (KDE):
   in `~/SeaDrive`.
 - `seadrive-dolphin-actions`: the "SeaDrive" right-click menu (lock/unlock,
   download/remove cache, share/internal/upload links, file history, and the
-  SeaDrive menu on empty space in `~/SeaDrive`).
+  SeaDrive menu on empty space in `~/SeaDrive`). With several items selected it
+  offers download and remove cache for all of them.
+
+Both follow symlinks into the mount, so folders linked from elsewhere (for
+example `~/Pictures` -> `~/SeaDrive/My Libraries/Media/Pictures`) get the
+emblems and the menu too.
 
 ## Build and install
 

@@ -27,14 +27,22 @@ public:
     QList<QAction *> actions(const KFileItemListProperties &props, QWidget *parentWidget) override
     {
         const KFileItemList items = props.items();
-        if (items.size() != 1 || !items.first().isLocalFile())
+        QStringList paths;
+        for (const KFileItem &item : items) {
+            const QString path = item.isLocalFile() ? seadrivePath(item.localPath()) : QString();
+            if (path.isEmpty())
+                return {};
+            paths << path;
+        }
+        if (paths.isEmpty())
             return {};
 
-        const QString path = items.first().localPath();
+        const QString path = paths.first();
         auto *menu = new QMenu(parentWidget);
         // Dolphin passes the current folder for a right-click on empty space.
-        const bool ok = path == seadriveMountDir() ? addMountMenu(menu)
-                                                   : inSeaDrive(path) && addFileMenu(menu, path, items.first().isDir());
+        const bool ok = paths.size() > 1           ? addMultiMenu(menu, paths)
+                        : path == seadriveMountDir() ? addMountMenu(menu)
+                                                     : addFileMenu(menu, path, items.first().isDir());
         if (!ok) {
             delete menu;
             return {};
@@ -48,13 +56,32 @@ public:
 private:
     static void add(QMenu *menu, const QString &label, const QString &cmd, const QString &arg = QString())
     {
-        connect(menu->addAction(label), &QAction::triggered, menu, [cmd, arg] {
+        addForAll(menu, label, cmd, {arg});
+    }
+
+    // Sends cmd once per argument.
+    static void addForAll(QMenu *menu, const QString &label, const QString &cmd, const QStringList &args)
+    {
+        connect(menu->addAction(label), &QAction::triggered, menu, [cmd, args] {
             // Off the UI thread: SeaDrive may take a while to answer.
-            QThreadPool::globalInstance()->start([cmd, arg] {
-                if (!SeaDriveConn().send(cmd, arg))
-                    qWarning("SeaDrive: '%s' failed for '%s'", qPrintable(cmd), qPrintable(arg));
+            QThreadPool::globalInstance()->start([cmd, args] {
+                SeaDriveConn conn;
+                for (const QString &arg : args)
+                    if (!conn.send(cmd, arg))
+                        qWarning("SeaDrive: '%s' failed for '%s'", qPrintable(cmd), qPrintable(arg));
             });
         });
+    }
+
+    // Several items: only the cache actions, which apply to each item alone.
+    // No per-item checks here: one request each would stall the menu for big selections.
+    static bool addMultiMenu(QMenu *menu, const QStringList &paths)
+    {
+        if (paths.contains(seadriveMountDir()))
+            return false;
+        addForAll(menu, QStringLiteral("Download"), QStringLiteral("download"), paths);
+        addForAll(menu, QStringLiteral("Remove cache"), QStringLiteral("uncache"), paths);
+        return true;
     }
 
     static bool addFileMenu(QMenu *menu, const QString &path, bool isDir)

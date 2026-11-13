@@ -30,12 +30,19 @@ template <class Pred> static bool waitFor(Pred done, int ms) {
 static void walk(QMenu *m, QStringList &out, QString indent = "") {
     for (QAction *a : m->actions()) { out << indent + a->text(); if (a->menu()) walk(a->menu(), out, indent + "  "); }
 }
-static QStringList menuFor(const QString &path, bool dir) {
-    KFileItem item(QUrl::fromLocalFile(path), dir ? "inode/directory" : "text/plain", dir ? S_IFDIR : S_IFREG);
-    KFileItemActions actions; actions.setItemListProperties(KFileItemListProperties(KFileItemList{item}));
+static KFileItem itemFor(const QString &path, bool dir) {
+    return KFileItem(QUrl::fromLocalFile(path), dir ? "inode/directory" : "text/plain", dir ? S_IFDIR : S_IFREG);
+}
+static QStringList menuForAll(const KFileItemList &items) {
+    KFileItemActions actions; actions.setItemListProperties(KFileItemListProperties(items));
     QMenu menu; actions.addActionsTo(&menu);
     QStringList out; walk(&menu, out);
     return out;
+}
+static QStringList menuFor(const QString &path, bool dir) { return menuForAll({itemFor(path, dir)}); }
+static bool requested(const QByteArray &line) {
+    QFile log(QDir::homePath() + "/requests.log"); log.open(QIODevice::ReadOnly);
+    return log.readAll().contains(line);
 }
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
@@ -43,6 +50,10 @@ int main(int argc, char **argv) {
     const QString lib = mount + "/lib";
     const QString file = lib + "/a.txt";
     const QStringList done{"emblem-seadrive-done"}, lockedOthers{"emblem-seadrive-locked-by-others"}, cloud{"emblem-seadrive-cloud"};
+    // A home folder linked into the mount, like ~/Pictures -> ~/SeaDrive/My Libraries/Media/Pictures.
+    const QString link = QDir::homePath() + "/Pictures";
+    const QString viaLink = link + "/a.txt";
+    CHECK(QFile::link(lib, link));
     setStatus("synced", "cached");
 
     QPluginLoader loader(argv[1]);
@@ -56,6 +67,11 @@ int main(int argc, char **argv) {
     ov->getOverlays(QUrl::fromLocalFile(file));
     ov->getOverlays(QUrl::fromLocalFile(lib));
     CHECK(waitFor([&] { return latest.value(file) == done && latest.value(lib) == done; }, 1000));
+    // Through the link: emblems arrive for the path Dolphin asked about, SeaDrive is asked about the real one.
+    ov->getOverlays(QUrl::fromLocalFile(viaLink));
+    CHECK(waitFor([&] { return latest.value(viaLink) == done; }, 1000));
+    CHECK(ov->getOverlays(QUrl::fromLocalFile(viaLink)) == done);
+    CHECK(!requested("get-file-status\t" + viaLink.toUtf8()));
     CHECK(ov->getOverlays(QUrl::fromLocalFile(file)) == done);
     CHECK(ov->getOverlays(QUrl::fromLocalFile("/etc/passwd")).isEmpty());
     CHECK(ov->getOverlays(QUrl::fromLocalFile(mount + "X/a")).isEmpty());
@@ -83,6 +99,22 @@ int main(int argc, char **argv) {
     printf("  mount menu: %s\n", qPrintable(m.join(" / ")));
     CHECK(m.contains("    me@x") && m.contains("      Resync") && m.contains("  Quit"));
     CHECK(!menuFor("/etc/passwd", false).contains("SeaDrive"));
+    CHECK(menuFor(viaLink, false).contains("  Lock File"));
+    CHECK(menuFor(link, true).contains("  Get Upload Link"));
+
+    // Several items: only the cache actions, for each of them; nothing if one is outside SeaDrive.
+    m = menuForAll({itemFor(file, false), itemFor(link, true)});
+    printf("  multi menu: %s\n", qPrintable(m.join(" / ")));
+    CHECK(m.contains("SeaDrive") && m.contains("  Download") && m.contains("  Remove cache"));
+    CHECK(!m.contains("  Lock File") && !m.contains("  Get Share Link") && !m.contains("  Get Upload Link"));
+    CHECK(!menuForAll({itemFor(file, false), itemFor("/etc/passwd", false)}).contains("SeaDrive"));
+    CHECK(!menuForAll({itemFor(file, false), itemFor(mount, true)}).contains("SeaDrive"));
+    {
+        KFileItemActions multi; multi.setItemListProperties(KFileItemListProperties({itemFor(file, false), itemFor(link, true)}));
+        QMenu menu; multi.addActionsTo(&menu);
+        for (QAction *a : menu.actions()) if (a->menu()) for (QAction *s : a->menu()->actions()) if (s->text() == "Remove cache") s->trigger();
+        CHECK(waitFor([&] { return requested("uncache\t" + file.toUtf8() + "\n") && requested("uncache\t" + lib.toUtf8() + "\n"); }, 1000));
+    }
 
     // Triggering an action sends it without waiting on the UI thread for a slow SeaDrive.
     KFileItem item(QUrl::fromLocalFile(file), "text/plain", S_IFREG);
@@ -92,10 +124,7 @@ int main(int argc, char **argv) {
     QElapsedTimer t; t.start();
     for (QAction *a : menu.actions()) if (a->menu()) for (QAction *s : a->menu()->actions()) if (s->text() == "Get Share Link") s->trigger();
     CHECK(t.elapsed() < 200);
-    CHECK(waitFor([&] {
-        QFile log(QDir::homePath() + "/requests.log"); log.open(QIODevice::ReadOnly);
-        return log.readAll().contains("get-share-link\t" + file.toUtf8());
-    }, 1000));
+    CHECK(waitFor([&] { return requested("get-share-link\t" + file.toUtf8()); }, 1000));
 
     // A slow SeaDrive must not stall Dolphin's UI thread.
     setStatus("synced", "cached", 2);

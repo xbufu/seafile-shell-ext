@@ -51,23 +51,44 @@ public:
 
     // Runs on Dolphin's UI thread, so it never touches the socket: a path seen
     // for the first time gets no emblem until the poller fetches it.
+    // Keyed by the path Dolphin asked for, which may run through a symlink
+    // (~/Pictures/...); SeaDrive is asked about the resolved path.
     QStringList getOverlays(const QUrl &url) override
     {
         const QString path = url.toLocalFile();
-        if (!inSeaDrive(path))
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto it = watched_.constFind(path);
+            if (it != watched_.cend())
+                return it->emblems;
+        }
+        const QString real = resolve(path);
+        if (real.isEmpty())
             return {};
 
         std::lock_guard<std::mutex> lock(mutex_);
-        const auto it = watched_.constFind(path);
-        if (it != watched_.cend())
-            return *it;
-        watched_.insert(path, {});
+        watched_.insert(path, {real, {}});
         unfetched_ << path;
         wake_.notify_one();
         return {};
     }
 
 private:
+    // The item's folder is resolved once and cached, so browsing a slow
+    // network mount resolves each folder once, not each file. Runs on the UI
+    // thread only. A link changed while Dolphin runs is picked up on restart.
+    QString resolve(const QString &path)
+    {
+        if (inSeaDrive(path))
+            return path;
+        const int slash = path.lastIndexOf(QLatin1Char('/'));
+        const QString dir = path.left(slash);
+        auto it = dirs_.constFind(dir);
+        if (it == dirs_.cend())
+            it = dirs_.insert(dir, seadrivePath(dir));
+        return it->isEmpty() ? QString() : *it + path.mid(slash);
+    }
+
     void poll()
     {
         using clock = std::chrono::steady_clock;
@@ -96,11 +117,14 @@ private:
             for (const QString &path : paths) {
                 if (stop_)
                     break;
-                if (!QFileInfo::exists(path)) {
+                lock.lock();
+                const QString real = watched_.value(path).real;
+                lock.unlock();
+                if (real.isEmpty() || !QFileInfo::exists(real)) {
                     gone << path;
                     continue;
                 }
-                const auto status = conn.send(QStringLiteral("get-file-status"), path);
+                const auto status = conn.send(QStringLiteral("get-file-status"), real);
                 if (!status)
                     break; // SeaDrive not running; retry next tick
                 fresh.insert(path, emblemsFor(*status));
@@ -112,8 +136,8 @@ private:
                 watched_.remove(path);
             for (auto it = fresh.cbegin(); it != fresh.cend(); ++it) {
                 auto old = watched_.find(it.key());
-                if (old != watched_.end() && *old != it.value()) {
-                    *old = it.value();
+                if (old != watched_.end() && old->emblems != it.value()) {
+                    old->emblems = it.value();
                     changed.insert(it.key(), it.value());
                 }
             }
@@ -132,7 +156,12 @@ private:
     std::mutex mutex_;
     std::condition_variable wake_;
     std::atomic<bool> stop_{false}; // also read unlocked between requests
-    QHash<QString, QStringList> watched_;
+    struct Watched {
+        QString real; // as SeaDrive knows it
+        QStringList emblems;
+    };
+    QHash<QString, Watched> watched_; // by the path Dolphin asked for
+    QHash<QString, QString> dirs_; // folder -> its path in SeaDrive, or empty; UI thread only
     QStringList unfetched_; // in watched_, waiting for their first fetch
     std::thread poller_; // last: starts after the members it uses exist
 };

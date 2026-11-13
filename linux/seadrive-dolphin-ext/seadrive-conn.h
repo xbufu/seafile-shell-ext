@@ -2,6 +2,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QString>
 
 #include <cerrno>
@@ -22,6 +23,17 @@ inline QString seadriveMountDir()
 inline bool inSeaDrive(const QString &path)
 {
     return path.startsWith(seadriveMountDir() + QLatin1Char('/'));
+}
+
+// The path as SeaDrive knows it, following symlinks such as ~/Pictures ->
+// ~/SeaDrive/My Libraries/Media/Pictures; empty if it is not in the mount.
+// Paths already in the mount come back as they are, without touching FUSE.
+inline QString seadrivePath(const QString &path)
+{
+    if (path == seadriveMountDir() || inSeaDrive(path))
+        return path;
+    const QString real = QFileInfo(path).canonicalFilePath();
+    return real == seadriveMountDir() || inSeaDrive(real) ? real : QString();
 }
 
 // Client for the SeaDrive GUI socket (~/.seadrive/seadrive_ext.sock).
